@@ -36,25 +36,30 @@ pub mod pallet {
 	#[pallet::getter(fn something)]
 	// Learn more about declaring storage items:
 	// https://docs.substrate.io/v3/runtime/storage#declaring-storage-items
-	pub type Something<T> = StorageValue<_, u32>;
+    pub type Vote<T> = StorageValue<_, u32>;
+    // only just started looking into this
+    // not sure how we can define multiple storage value types
+    // unless we dont care?? and everything just goes under one general store
+    // pub type WhitelistUser<T : frame_system::Config> = StorageValue<_, T::AccountId>;
 
 	// Pallets use events to inform users when important changes are made.
 	// https://docs.substrate.io/v3/runtime/events-and-errors
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
-		/// Event documentation should end with an array that provides descriptive names for event
-		/// parameters. [something, who]
-		SomethingStored(u32, T::AccountId),
+        // Announce when a user has signed up
+        // I assume we don't actually want to do this??? Putting it here anyway
+        // params[who]
+        UserSignedUp(T::AccountId),
+        // Save a vote
+        // params [vote targed, who]
+        SaveVote(u32, T::AccountId),
 	}
 
-	// Errors inform users that something went wrong.
 	#[pallet::error]
 	pub enum Error<T> {
-		/// Error names should be descriptive.
-		NoneValue,
-		/// Errors should have helpful documentation associated with them.
-		StorageOverflow,
+        // Throw when a non-signed up user tries to vote
+        NotSignedUp
 	}
 
 	// Dispatchable functions allows users to interact with the pallet and invoke state changes.
@@ -62,41 +67,53 @@ pub mod pallet {
 	// Dispatchable functions must be annotated with a weight and must return a DispatchResult.
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
-		/// An example dispatchable that takes a singles value as a parameter, writes the value to
-		/// storage and emits an event. This function must be dispatched by a signed extrinsic.
-		#[pallet::weight(10_000 + T::DbWeight::get().writes(1))]
-		pub fn do_something(origin: OriginFor<T>, something: u32) -> DispatchResult {
-			// Check that the extrinsic was signed and get the signer.
-			// This function will return an error if the extrinsic is not signed.
-			// https://docs.substrate.io/v3/runtime/origins
-			let who = ensure_signed(origin)?;
+        // Not entirely sure what we want in our parameters
+        // I don't think we really want to whitelist (for simplicity sake)
+        // so just get everything ready to accept votes in the active voting context
+        #[pallet::weight(10_000)]
+        pub fn begin_voting(origin: OriginFor<T>) -> DispatchResult {
+            Ok(())
+        }
 
-			// Update storage.
-			<Something<T>>::put(something);
+        // I assume we would just write out the user who is signed up to the store?
+        #[pallet::weight(10_000)]
+        pub fn sign_up(origin: OriginFor<T>) -> DispatchResult {
+            let who = ensure_signed(origin)?;
+            // I don't really know the semantics here
+            // We want to write a user who signs up to a local store
+            // That way we can check against the store when someone tries to vote
+            // <WhitelistUser<T>>::put(who);
+            Self::deposit_event(Event::UserSignedUp(who));
 
-			// Emit an event.
-			Self::deposit_event(Event::SomethingStored(something, who));
-			// Return a successful DispatchResultWithPostInfo
-			Ok(())
-		}
+            Ok(())
+        }
 
-		/// An example dispatchable that may throw a custom error.
-		#[pallet::weight(10_000 + T::DbWeight::get().reads_writes(1,1))]
-		pub fn cause_error(origin: OriginFor<T>) -> DispatchResult {
-			let _who = ensure_signed(origin)?;
+        // this will need to change
+        // weight of a vote should be dynamic based on how many times that user has votes on a particular subject
+        // during voting setup we might want to define what each first-level vote cost
+        // something like: cost to the voter = (number of votes)^2
+        #[pallet::weight(10_000)]
+        pub fn vote(origin: OriginFor<T>) -> DispatchResult {
+            let who = ensure_signed(origin)?;
+            // check if user is signed up
+            // otherwise throw an InvalidVote error
+            // Err(Error::<T>::NotSignedUp)?;
 
-			// Read a value from storage.
-			match <Something<T>>::get() {
-				// Return an error if the value has not been set.
-				None => Err(Error::<T>::NoneValue)?,
-				Some(old) => {
-					// Increment the value read from storage; will error in the event of overflow.
-					let new = old.checked_add(1).ok_or(Error::<T>::StorageOverflow)?;
-					// Update the value in storage with the incremented result.
-					<Something<T>>::put(new);
-					Ok(())
-				},
-			}
-		}
+            // store a vote
+            // Not sure what the "target" will look like so I'm just putting 3 for now
+            <Vote<T>>::put(3);
+            Self::deposit_event(Event::SaveVote(3, who));
+
+            Ok(())
+        }
+
+        // I imagine we need some sort of "end" function.
+        // probably not exposed out like this so that users can call it
+        // Figured it would be more of an event-driven thing called internally
+        #[pallet::weight(10_000)]
+        pub fn end_voting(origin: OriginFor<T>) -> DispatchResult {
+            Ok(())
+        }
+
 	}
 }
