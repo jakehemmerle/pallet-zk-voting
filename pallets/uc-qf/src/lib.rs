@@ -1,5 +1,24 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
+/*
+
+EXAMPLE INTERFACE:
+
+new_voting_round() -> round_id: u32
+- Creates a new qf voting round. we can now add project, people, etc. Maybe add a bock time for how long the round lasts? 
+
+create_new_project(name: &str, address: T::AccountId) -> project_id: u32
+- make a new project by providing a name and an address. Returns a proejct ID
+
+register_project(round_id: u32, project_id) -> NotProjectOwner | ProjectRegistered
+- associate a project with a voting round. Needs to be registered by the project owner.
+
+vote(round_id: u32, project_id, weight: u8) -> 
+
+end_rount (round_id: u32)
+
+*/
+
 /// Edit this file to define custom logic or remove it if it is not needed.
 /// Learn more about FRAME and the core library of Substrate FRAME pallets:
 /// <https://docs.substrate.io/v3/runtime/frame>
@@ -51,6 +70,7 @@ pub mod pallet {
         // I assume we don't actually want to do this??? Putting it here anyway
         // params[who]
         UserSignedUp(T::AccountId),
+        NewVotingRound(u32)
         // Save a vote
         // params [vote targed, who]
         SaveVote(u32, T::AccountId),
@@ -59,7 +79,8 @@ pub mod pallet {
 	#[pallet::error]
 	pub enum Error<T> {
         // Throw when a non-signed up user tries to vote
-        NotSignedUp
+        NotSignedUp,
+
 	}
 
 	// Dispatchable functions allows users to interact with the pallet and invoke state changes.
