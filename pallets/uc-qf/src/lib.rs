@@ -1,27 +1,5 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
-/*
-
-EXAMPLE INTERFACE:
-
-new_voting_round() -> round_id: u32
-- Creates a new qf voting round. we can now add project, people, etc. Maybe add a bock time for how long the round lasts? 
-
-create_new_project(name: &str, address: T::AccountId) -> project_id: u32
-- make a new project by providing a name and an address. Returns a proejct ID
-
-register_project(round_id: u32, project_id) -> NotProjectOwner | ProjectRegistered
-- associate a project with a voting round. Needs to be registered by the project owner.
-
-vote(round_id: u32, project_id, weight: u8) -> 
-
-end_rount (round_id: u32)
-
-*/
-
-/// Edit this file to define custom logic or remove it if it is not needed.
-/// Learn more about FRAME and the core library of Substrate FRAME pallets:
-/// <https://docs.substrate.io/v3/runtime/frame>
 pub use pallet::*;
 
 // #[cfg(test)]
@@ -49,38 +27,36 @@ pub mod pallet {
 	#[pallet::generate_store(pub(super) trait Store)]
 	pub struct Pallet<T>(_);
 
-	// The pallet's runtime storage items.
-	// https://docs.substrate.io/v3/runtime/storage
-	#[pallet::storage]
-	#[pallet::getter(fn something)]
-	// Learn more about declaring storage items:
-	// https://docs.substrate.io/v3/runtime/storage#declaring-storage-items
-    pub type Vote<T> = StorageValue<_, u32>;
-    // only just started looking into this
-    // not sure how we can define multiple storage value types
-    // unless we dont care?? and everything just goes under one general store
-    // pub type WhitelistUser<T : frame_system::Config> = StorageValue<_, T::AccountId>;
+    // (coordinator_account_id) -> (round_id)
+    // doing it this way so the coordinator can call functions without tracking the round_id,
+    // only the users making a vote need to track the round_id
+    // also prevents outside manipulation (i.e., non-coordinator ending voting, non-coordinator adding new project)
+    #[pallet::storage]
+    pub type Coordinator<T> = StorageMap<_, Identity, <T as frame_system::Config>::AccountId, u32>;
+
+
+    // track if a specific round is active or not
+    #[pallet::storage]
+    pub type ActiveRound<T> = StorageMap<_, Identity, u32, bool>;
+
+
+    // votes storage type should have the key (round_id, project_id, account_id) and value (weight)
+    // this might be better as (round_id, project_id) -> (Vec<(account_id, weight)>)
+    // #[pallet::storage]
+    // pub type Vote<T>
 
 	// Pallets use events to inform users when important changes are made.
 	// https://docs.substrate.io/v3/runtime/events-and-errors
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
-        // Announce when a user has signed up
-        // I assume we don't actually want to do this??? Putting it here anyway
-        // params[who]
-        UserSignedUp(T::AccountId),
-        NewVotingRound(u32)
-        // Save a vote
-        // params [vote targed, who]
-        SaveVote(u32, T::AccountId),
+        NewVotingRound(u32),
 	}
 
 	#[pallet::error]
 	pub enum Error<T> {
-        // Throw when a non-signed up user tries to vote
-        NotSignedUp,
-
+        InvalidRoundID,
+        NotCoordinator
 	}
 
 	// Dispatchable functions allows users to interact with the pallet and invoke state changes.
@@ -88,51 +64,108 @@ pub mod pallet {
 	// Dispatchable functions must be annotated with a weight and must return a DispatchResult.
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
-        // Not entirely sure what we want in our parameters
-        // I don't think we really want to whitelist (for simplicity sake)
-        // so just get everything ready to accept votes in the active voting context
-        #[pallet::weight(10_000)]
-        pub fn begin_voting(origin: OriginFor<T>) -> DispatchResult {
-            Ok(())
-        }
+        // !!! The case of a Coordinator running TWO rounds at once is currently not supported
+        // Personally I believe we should deny the ability for one Coordinator to run two rounds
+        // and that decision is for simplicity sake, we still need to add a check if a round is active for Coordinator and throw an error if they try to start a new one
 
-        // I assume we would just write out the user who is signed up to the store?
-        #[pallet::weight(10_000)]
-        pub fn sign_up(origin: OriginFor<T>) -> DispatchResult {
+        // COORDINATOR FUNCTION
+        // The user who calls start_round will become the Coordinator
+        #[pallet::weight(100)]
+        pub fn start_round(origin: OriginFor<T>) -> DispatchResult {
             let who = ensure_signed(origin)?;
-            // I don't really know the semantics here
-            // We want to write a user who signs up to a local store
-            // That way we can check against the store when someone tries to vote
-            // <WhitelistUser<T>>::put(who);
-            Self::deposit_event(Event::UserSignedUp(who));
+
+            // TODO: check if a round is already assigned under the coordinator
+
+            // right now we are just going to make a dummy round_id of 1234
+            // but we should switch this to be a uuid or something https://docs.rs/uuid/0.5.1/uuid/index.html
+            let round_id = 1234;
+            // assign round_id to the coordinator
+            <Coordinator<T>>::insert(who, round_id);
+            // set the round as active
+            <ActiveRound<T>>::insert(round_id, true);
+            Self::deposit_event(Event::NewVotingRound(round_id));
 
             Ok(())
         }
 
-        // this will need to change
-        // weight of a vote should be dynamic based on how many times that user has votes on a particular subject
-        // during voting setup we might want to define what each first-level vote cost
-        // something like: cost to the voter = (number of votes)^2
-        #[pallet::weight(10_000)]
-        pub fn vote(origin: OriginFor<T>) -> DispatchResult {
+        // PROJECT OWNER FUNCTION
+        // create_new_project(name: &str, address: T::AccountId) -> project_id: u32
+        // - make a new project by providing a name and an address. Returns a project ID
+        #[pallet::weight(100)]
+        pub fn create_new_project(origin: OriginFor<T>, name: &str, address: T::AccountId) -> DispatchResult {
+            // @Question: is address the account where funds will be distributed?
+            // or is address supposed to be the project owner?
+
+            // I like the idea of address being the funds destination
+            // with the user who calls create_new_project being the project owner
+
+            // this will also need a uuid type thing like start_round
+
+            // will need to create some storage record like key(project_id) -> value(name, owner: AccountID, dest_address: AccountID)
+            // create a struct for the value and use StorageMap
+
+            Ok(())
+        }
+        
+        // PROJECT OWNER FUNCTION
+        // register_project(round_id: u32, project_id) -> NotProjectOwner | ProjectRegistered
+        // - associate a project with a voting round. Needs to be registered by the project owner.
+        #[pallet::weight(100)]
+        pub fn register_project(origin: OriginFor<T>, round_id: u32, project_id: u32) -> DispatchResult {
+            // check if project exists
+
+            // check if current user is the project owner
+
+            // create a new record for this project with this round
+            // something like <Projects<T>> which is a StorageMap of (round_id) -> (project_ids: Vec<u32>) 
+
+            Ok(())
+        }
+        
+        // VOTER FUNCTION
+        // vote(round_id: u32, project_id, weight: u8) -> 
+        // @Question: is the weight supposed to be how much the user is committing? Shouldn't that be much larger than u8?
+        #[pallet::weight(100)]
+        pub fn vote(origin: OriginFor<T>, round_id: u32, project_id: u32, weight: u8) -> DispatchResult {
+            // check if the round is active
+            if !<ActiveRound<T>>::contains_key(round_id) { // round has never been registered
+                Err(Error::<T>::InvalidRoundID)?
+            } else if <ActiveRound<T>>::get(round_id).unwrap_or(false) == false { // round is set as inactive
+                Err(Error::<T>::InvalidRoundID)?
+            }
+
+            // apply vote
+            // will need a new <Vote<T>> StorageMap
+
+            // store as (round_id, project_id, voter_id) -> weight
+            // benefit of doing this is when a user votes more than once on a single project, only their most recent vote will be counted
+            // and with an NMap we can iterate on a partial key (i.e., just the round and project IDs, so we can get each vote in batches by project_id)
+
+            Ok(())
+        }
+
+        // COORDINATOR FUNCTION
+        // end_round (round_id: u32)
+        #[pallet::weight(100)]
+        pub fn end_round(origin: OriginFor<T>) -> DispatchResult {
             let who = ensure_signed(origin)?;
-            // check if user is signed up
-            // otherwise throw an InvalidVote error
-            // Err(Error::<T>::NotSignedUp)?;
+            // end_round may only be called by the Coordinator, if anyone besides the Coordinator tries to execute this, throw an error
+            let result = <Coordinator<T>>::try_get(&who);
+            if result.is_err() {
+                Err(Error::<T>::NotCoordinator)?
+            }
+            // retrieve the round this Coordinator is related to
+            let round_id = result.unwrap_or(0);
+            if round_id == 0 {
+                Err(Error::<T>::InvalidRoundID)?
+            }
+            // TODO: collect all stored votes, perform QF
 
-            // store a vote
-            // Not sure what the "target" will look like so I'm just putting 3 for now
-            <Vote<T>>::put(3);
-            Self::deposit_event(Event::SaveVote(3, who));
-
-            Ok(())
-        }
-
-        // I imagine we need some sort of "end" function.
-        // probably not exposed out like this so that users can call it
-        // Figured it would be more of an event-driven thing called internally
-        #[pallet::weight(10_000)]
-        pub fn end_voting(origin: OriginFor<T>) -> DispatchResult {
+            // set coordinators round to nothing
+            <Coordinator<T>>::remove(&who);
+            // set the round as inactive
+            <ActiveRound<T>>::remove(round_id);
+            
             Ok(())
         }
 
