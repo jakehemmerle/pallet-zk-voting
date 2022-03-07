@@ -15,6 +15,10 @@ pub use pallet::*;
 pub mod pallet {
 	use frame_support::pallet_prelude::*;
 	use frame_system::pallet_prelude::*;
+    use frame_support::inherent::Vec;
+    // use scale_info::prelude::string::String;
+    // pub use codec::alloc::string::*;
+
 
 	/// Configure the pallet by specifying the parameters and types on which it depends.
 	#[pallet::config]
@@ -92,7 +96,9 @@ pub mod pallet {
         // create_new_project(name: &str, address: T::AccountId) -> project_id: u32
         // - make a new project by providing a name and an address. Returns a project ID
         #[pallet::weight(100)]
-        pub fn create_new_project(origin: OriginFor<T>, name: &str, address: T::AccountId) -> DispatchResult {
+        // pub fn create_new_project<'a>(origin: OriginFor<T>, name: &'a str, address: T::AccountId) -> DispatchResult {
+        pub fn create_new_project(origin: OriginFor<T>, name: Vec<u8>, address: T::AccountId) -> DispatchResult {
+            // let name_string = String::from_utf8_lossy(&name);
             // @Question: is address the account where funds will be distributed?
             // or is address supposed to be the project owner?
 
