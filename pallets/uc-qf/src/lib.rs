@@ -28,8 +28,21 @@ pub mod pallet {
 	#[pallet::generate_store(pub(super) trait Store)]
 	pub struct Pallet<T>(_);
 
+    #[derive(Clone, Encode, Decode, Eq, PartialEq, RuntimeDebug, Default, TypeInfo)]
+    pub struct ProjectDetails<AccountId> {
+        name: Vec<u8>,
+        owner: AccountId,
+        destination: AccountId
+    }
+
+    #[pallet::type_value]
+    pub fn DefaultID<T: Config>() -> u32 { 1 }
+
     #[pallet::storage]
-    pub type RoundID<T> = StorageValue<_, u32>;
+    pub type RoundID<T> = StorageValue<_, u32, ValueQuery, DefaultID<T>>;
+
+    #[pallet::storage]
+    pub type ProjectID<T> = StorageValue<_, u32, ValueQuery, DefaultID<T>>;
 
     // (coordinator_account_id) -> (round_id)
     // doing it this way so the coordinator can call functions without tracking the round_id,
@@ -44,6 +57,14 @@ pub mod pallet {
     #[pallet::storage]
     pub type Round<T> = StorageMap<_, Identity, u32, bool>;
 
+    // (project_id) -> (project details)
+    #[pallet::storage]
+    pub type Project<T: Config> = StorageMap<_, Identity, u32, ProjectDetails<T::AccountId>, ValueQuery>;
+
+    // (project_owner_account_id) -> (project_id)
+    #[pallet::storage]
+    pub type ProjectOwner<T> = StorageMap<_, Identity, <T as frame_system::Config>::AccountId, u32>;
+
     // votes storage type should have the key (round_id, project_id, account_id) and value (weight)
     // this might be better as (round_id, project_id) -> (Vec<(account_id, weight)>)
     // #[pallet::storage]
@@ -55,6 +76,7 @@ pub mod pallet {
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
         NewVotingRound(u32),
+        NewProjectCreated(u32),
 	}
 
 	#[pallet::error]
@@ -78,7 +100,7 @@ pub mod pallet {
         #[pallet::weight(100)]
         pub fn start_round(origin: OriginFor<T>) -> DispatchResult {
             let who = ensure_signed(origin)?;
-            
+
             if Self::is_coordinator_active(&who) {
                 Err(Error::<T>::CoordinatorAlreadyActive)?
             }
@@ -99,6 +121,7 @@ pub mod pallet {
         #[pallet::weight(100)]
         // pub fn create_new_project<'a>(origin: OriginFor<T>, name: &'a str, address: T::AccountId) -> DispatchResult {
         pub fn create_new_project(origin: OriginFor<T>, name: Vec<u8>, address: T::AccountId) -> DispatchResult {
+            let who = ensure_signed(origin)?;
             // let name_string = String::from_utf8_lossy(&name);
             // @Question: is address the account where funds will be distributed?
             // or is address supposed to be the project owner?
@@ -106,10 +129,11 @@ pub mod pallet {
             // I like the idea of address being the funds destination
             // with the user who calls create_new_project being the project owner
 
-            // this will also need a uuid type thing like start_round
+            let project_id = Self::get_new_project_id();
+            let project_details = ProjectDetails { name: name, owner: who, destination: address };
+            <Project<T>>::insert(project_id, project_details);
 
-            // will need to create some storage record like key(project_id) -> value(name, owner: AccountID, dest_address: AccountID)
-            // create a struct for the value and use StorageMap
+            Self::deposit_event(Event::NewProjectCreated(project_id));
 
             Ok(())
         }
@@ -167,7 +191,7 @@ pub mod pallet {
                 Err(Error::<T>::InvalidRoundID)?
             }
             // TODO: collect all stored votes, perform QF
-
+            Self::perform_qf_and_distribute_funds(round_id);
             // set coordinators round to nothing
             <Coordinator<T>>::remove(&who);
             // set the round as inactive
@@ -181,9 +205,15 @@ pub mod pallet {
     // private functions (helpers)
     impl<T: Config> Pallet<T> {
         fn get_new_round_id() -> u32 {
-            let round_id = RoundID::<T>::get().unwrap();
+            let round_id = RoundID::<T>::get();
             RoundID::<T>::put(round_id.wrapping_add(1));
             return round_id;
+        }
+
+        fn get_new_project_id() -> u32 {
+            let project_id = ProjectID::<T>::get();
+            ProjectID::<T>::put(project_id.wrapping_add(1));
+            return project_id;
         }
 
         // Check if a given coordinator is associated with an active round
@@ -201,6 +231,10 @@ pub mod pallet {
                 Ok(is_active) => return is_active,
                 Err(_) => return false // no round found, not active
             }
+        }
+
+        fn perform_qf_and_distribute_funds(round_id: u32) {
+
         }
     }
 }
