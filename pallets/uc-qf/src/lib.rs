@@ -52,7 +52,6 @@ pub mod pallet {
     pub type Coordinator<T> = StorageMap<_, Identity, <T as frame_system::Config>::AccountId, u32>;
 
     // (round_id) -> (is_active)
-    // this datatype is rather useless currently, as the coordinator tracks the round_id
     // track if a specific round is active or not
     #[pallet::storage]
     pub type Round<T> = StorageMap<_, Identity, u32, bool>;
@@ -82,8 +81,11 @@ pub mod pallet {
 	#[pallet::error]
 	pub enum Error<T> {
         InvalidRoundID,
+        InvalidProjectID,
         NotCoordinator,
-        CoordinatorAlreadyActive
+        CoordinatorAlreadyActive,
+        RoundIsInactive,
+        NotProjectOwner,
 	}
 
 	// Dispatchable functions allows users to interact with the pallet and invoke state changes.
@@ -144,9 +146,28 @@ pub mod pallet {
         #[pallet::weight(100)]
         pub fn register_project(origin: OriginFor<T>, round_id: u32, project_id: u32) -> DispatchResult {
             // check if project exists
-
+            let project = <Project<T>>::try_get(project_id);
+            if project.is_err() {
+                Err(Error::<T>::InvalidProjectID)?
+            }
+            // check if round exists and is active
+            match <Round<T>>::try_get(round_id) {
+                Ok(is_active) => {
+                    if !is_active {
+                        Err(Error::<T>::RoundIsInactive)?
+                    }
+                },
+                Err(_) => Err(Error::<T>::InvalidRoundID)?
+            }
             // check if current user is the project owner
+            let details = project.unwrap();
+            let who = ensure_signed(origin)?;
+            if details.owner != who {
+                Err(Error::<T>::NotProjectOwner)?
+            }
+            // all conditions passed, register the proejct
 
+            // TODO
             // create a new record for this project with this round
             // something like <Projects<T>> which is a StorageMap of (round_id) -> (project_ids: Vec<u32>) 
 
