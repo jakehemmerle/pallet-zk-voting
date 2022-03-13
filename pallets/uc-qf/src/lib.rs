@@ -16,9 +16,6 @@ pub mod pallet {
 	use frame_support::pallet_prelude::*;
 	use frame_system::pallet_prelude::*;
     use frame_support::inherent::Vec;
-    // use scale_info::prelude::string::String;
-    // pub use codec::alloc::string::*;
-
 
 	/// Configure the pallet by specifying the parameters and types on which it depends.
 	#[pallet::config]
@@ -31,6 +28,9 @@ pub mod pallet {
 	#[pallet::generate_store(pub(super) trait Store)]
 	pub struct Pallet<T>(_);
 
+    #[pallet::storage]
+    pub type RoundID<T> = StorageValue<_, u32>;
+
     // (coordinator_account_id) -> (round_id)
     // doing it this way so the coordinator can call functions without tracking the round_id,
     // only the users making a vote need to track the round_id
@@ -38,11 +38,11 @@ pub mod pallet {
     #[pallet::storage]
     pub type Coordinator<T> = StorageMap<_, Identity, <T as frame_system::Config>::AccountId, u32>;
 
-
+    // (round_id) -> (is_active)
+    // this datatype is rather useless currently, as the coordinator tracks the round_id
     // track if a specific round is active or not
     #[pallet::storage]
-    pub type ActiveRound<T> = StorageMap<_, Identity, u32, bool>;
-
+    pub type Round<T> = StorageMap<_, Identity, u32, bool>;
 
     // votes storage type should have the key (round_id, project_id, account_id) and value (weight)
     // this might be better as (round_id, project_id) -> (Vec<(account_id, weight)>)
@@ -60,7 +60,8 @@ pub mod pallet {
 	#[pallet::error]
 	pub enum Error<T> {
         InvalidRoundID,
-        NotCoordinator
+        NotCoordinator,
+        CoordinatorAlreadyActive
 	}
 
 	// Dispatchable functions allows users to interact with the pallet and invoke state changes.
@@ -77,16 +78,16 @@ pub mod pallet {
         #[pallet::weight(100)]
         pub fn start_round(origin: OriginFor<T>) -> DispatchResult {
             let who = ensure_signed(origin)?;
+            
+            if Self::is_coordinator_active(&who) {
+                Err(Error::<T>::CoordinatorAlreadyActive)?
+            }
 
-            // TODO: check if a round is already assigned under the coordinator
-
-            // right now we are just going to make a dummy round_id of 1234
-            // but we should switch this to be a uuid or something https://docs.rs/uuid/0.5.1/uuid/index.html
-            let round_id = 1234;
+            let round_id = Self::get_new_round_id();
             // assign round_id to the coordinator
-            <Coordinator<T>>::insert(who, round_id);
+            <Coordinator<T>>::insert(&who, round_id);
             // set the round as active
-            <ActiveRound<T>>::insert(round_id, true);
+            <Round<T>>::insert(round_id, true);
             Self::deposit_event(Event::NewVotingRound(round_id));
 
             Ok(())
@@ -134,9 +135,9 @@ pub mod pallet {
         #[pallet::weight(100)]
         pub fn vote(origin: OriginFor<T>, round_id: u32, project_id: u32, weight: u8) -> DispatchResult {
             // check if the round is active
-            if !<ActiveRound<T>>::contains_key(round_id) { // round has never been registered
+            if !<Round<T>>::contains_key(round_id) { // round has never been registered
                 Err(Error::<T>::InvalidRoundID)?
-            } else if <ActiveRound<T>>::get(round_id).unwrap_or(false) == false { // round is set as inactive
+            } else if <Round<T>>::get(round_id).unwrap_or(false) == false { // round is set as inactive
                 Err(Error::<T>::InvalidRoundID)?
             }
 
@@ -170,10 +171,36 @@ pub mod pallet {
             // set coordinators round to nothing
             <Coordinator<T>>::remove(&who);
             // set the round as inactive
-            <ActiveRound<T>>::remove(round_id);
+            <Round<T>>::remove(round_id);
             
             Ok(())
         }
 
 	}
+
+    // private functions (helpers)
+    impl<T: Config> Pallet<T> {
+        fn get_new_round_id() -> u32 {
+            let round_id = RoundID::<T>::get().unwrap();
+            RoundID::<T>::put(round_id.wrapping_add(1));
+            return round_id;
+        }
+
+        // Check if a given coordinator is associated with an active round
+        fn is_coordinator_active(coordinator: &<T as frame_system::Config>::AccountId) -> bool {
+            // Try and find the Coordinator ID in storage
+            let coord = <Coordinator<T>>::try_get(coordinator);
+            let round_id;
+            match coord {
+                Ok(round) => round_id = round,
+                Err(_) => return false, // no coordinator found, not active
+            }
+            // Try and get the round the coordinator is associated with
+            let round = <Round<T>>::try_get(round_id);
+            match round {
+                Ok(is_active) => return is_active,
+                Err(_) => return false // no round found, not active
+            }
+        }
+    }
 }
