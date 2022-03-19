@@ -274,8 +274,13 @@ impl pallet_template::Config for Runtime {
 	type Event = Event;
 }
 
+parameter_types! {
+	pub const MaxProjects: u32 = 2;
+}
+
 impl pallet_uc_qf::Config for Runtime {
     type Event = Event;
+    type MaxProjects = MaxProjects;
 }
 
 // Create the runtime by composing the FRAME pallets that were previously configured.

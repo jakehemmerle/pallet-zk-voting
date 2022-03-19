@@ -22,6 +22,9 @@ pub mod pallet {
 	pub trait Config: frame_system::Config {
 		/// Because this pallet emits events, it depends on the runtime's definition of an event.
 		type Event: From<Event<Self>> + IsType<<Self as frame_system::Config>::Event>;
+
+        #[pallet::constant]
+        type MaxProjects: Get<u32>;
 	}
 
 	#[pallet::pallet]
@@ -66,12 +69,9 @@ pub mod pallet {
     #[pallet::storage]
     pub type ProjectOwner<T> = StorageMap<_, Identity, AccountIdOf<T>, u32>;
 
-    // #[pallet::type_value]
-    // pub fun DefaultList<T: Config>() -> vec! { Vec::new() }
-
     // (round_id) -> [(project_id)]
-    // #[pallet::storage]
-    // pub type Projects<T> = StorageMap<_, Identity, u32, vec!, ValueQuery, DefaultList<T>>;
+    #[pallet::storage]
+    pub type Projects<T: Config> = StorageMap<_, Blake2_128Concat, u32, BoundedVec<u32, T::MaxProjects>, ValueQuery>;
 
     // (round_id, project_id, account_id) -> (weight)
     // benefit of doing this is when a user votes more than once on a single project, only their most recent vote will be counted
@@ -95,31 +95,30 @@ pub mod pallet {
 	pub enum Event<T: Config> {
         NewVotingRound(u32),
         NewProjectCreated(u32),
+        ProjectRegistered(u32, u32),
 	}
 
 	#[pallet::error]
 	pub enum Error<T> {
         InvalidRoundID,
         InvalidProjectID,
+        ProjectAlreadyRegistered,
+        ProjectNotRegistered,
+        MaximumProjectsReached,
         NotCoordinator,
         CoordinatorAlreadyActive,
         RoundIsInactive,
         NotProjectOwner,
 	}
 
-	// Dispatchable functions allows users to interact with the pallet and invoke state changes.
-	// These functions materialize as "extrinsics", which are often compared to transactions.
-	// Dispatchable functions must be annotated with a weight and must return a DispatchResult.
+	// Extrinsic Functions
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
         // !!! The case of a Coordinator running TWO rounds at once is currently not supported
-        // Personally I believe we should deny the ability for one Coordinator to run two rounds
-        // and that decision is for simplicity sake, we still need to add a check if a round is active for Coordinator and throw an error if they try to start a new one
 
         // COORDINATOR FUNCTION
         // The user who calls start_round will become the Coordinator
-        // lets go with this: the full ammount in the coordinator account will be the matching funds
-        // its easy enough to create a new wallet and move money into it, so this is a fine solution
+        // !!! the full ammount in the coordinator account will be the matching funds
         #[pallet::weight(100)]
         pub fn start_round(origin: OriginFor<T>) -> DispatchResult {
             let who = ensure_signed(origin)?;
@@ -155,6 +154,7 @@ pub mod pallet {
         
         // PROJECT OWNER FUNCTION
         // associate a project with a voting round. Needs to be registered by the project owner.
+        // cannot register the project if value for MaxProjects is reached
         #[pallet::weight(100)]
         pub fn register_project(origin: OriginFor<T>, round_id: u32, project_id: u32) -> DispatchResult {
             // check if project exists
@@ -177,13 +177,16 @@ pub mod pallet {
             if details.owner != who {
                 Err(Error::<T>::NotProjectOwner)?
             }
-            // all conditions passed, register the proejct
+            // check if the project is already registerd
+            if Self::is_project_registered(project_id, round_id) {
+                Err(<Error<T>>::ProjectAlreadyRegistered)?
+            }
+            // all conditions passed, register the project
+            <Projects<T>>::try_mutate(round_id, |projects_vec| {
+                projects_vec.try_push(project_id)
+            }).map_err(|_| <Error<T>>::MaximumProjectsReached)?;
 
-            // TODO
-            // create a new record for this project with this round
-            // saving this for later because I don't really konw how to do it yet
-            // something like <Projects<T>> which is a StorageMap of (round_id) -> (project_ids: Vec<u32>) 
-            // <Projects<T>>::try_push(round_id, project_id);
+            Self::deposit_event(Event::ProjectRegistered(project_id, round_id));
 
             Ok(())
         }
@@ -200,15 +203,12 @@ pub mod pallet {
                 Err(Error::<T>::InvalidRoundID)?
             }
 
-            // TODO
-            // get list of projects for this round
-
-            // TODO
-            // make sure this project_id is in the list
+            // check if the project is registered to this round
+            if !Self::is_project_registered(project_id, round_id) {
+                Err(<Error<T>>::ProjectNotRegistered)?
+            }
 
             // apply vote
-            // will need a new <Vote<T>> StorageMap
-            //round_id, project_id, account_id) -> (weight)
             let key = (round_id, project_id, who);
             match <Vote<T>>::try_get(&key) {
                 Ok(_) => {
@@ -251,7 +251,7 @@ pub mod pallet {
 
 	}
 
-    // private functions (helpers)
+    // Private Functions
     impl<T: Config> Pallet<T> {
         fn get_new_round_id() -> u32 {
             let round_id = RoundID::<T>::get();
@@ -282,9 +282,40 @@ pub mod pallet {
             }
         }
 
+        fn is_project_registered(project_id: u32, round_id: u32) -> bool {
+            match <Projects<T>>::try_get(round_id) {
+                Ok(projects_vec) => {
+                    if projects_vec.contains(&project_id) {
+                        return true;
+                    }
+                },
+                Err(_) => {}
+            }
+            return false;
+        }
+
         // distribute funds into project accounts
         fn perform_qf_and_distribute_funds(round_id: u32) {
-
+            // get list of projects for this round_id
+            let mut projects = vec![];
+            match <Projects<T>>::try_get(round_id) {
+                Ok(projects_vec) => {
+                    projects = projects_vec.into_inner();
+                },
+                Err(_) => { }
+            }
+            // loop through each project
+            for project_id in projects {
+                // loop through each vote for this project
+                let prefix_key = (round_id, project_id);
+                for vote in <Vote<T>>::iter_prefix_values(prefix_key) {
+                    // I think I'm changing my mind on this
+                    // I'd rather have votes stored as (round, project) -> [(account_id, vote)]
+                    // only because I don't know how to get the full key for a vote like this
+                    // if we can get the full key using iter_prefix_values then its fine to continue this way
+                    
+                }
+            }
         }
     }
 }
