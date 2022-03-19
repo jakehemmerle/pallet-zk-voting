@@ -1,6 +1,7 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
 pub use pallet::*;
+pub use frame_support::sp_runtime::{traits::{AccountIdConversion, Saturating, Zero, Hash}};
 
 // #[cfg(test)]
 // mod mock;
@@ -15,7 +16,6 @@ pub use pallet::*;
 pub mod pallet {
 	use frame_support::pallet_prelude::*;
 	use frame_system::pallet_prelude::*;
-    use frame_support::inherent::Vec;
 
 	/// Configure the pallet by specifying the parameters and types on which it depends.
 	#[pallet::config]
@@ -28,19 +28,21 @@ pub mod pallet {
 	#[pallet::generate_store(pub(super) trait Store)]
 	pub struct Pallet<T>(_);
 
-    #[derive(Clone, Encode, Decode, Eq, PartialEq, RuntimeDebug, Default, TypeInfo)]
+    #[derive(Encode, Decode, Default, PartialEq, Eq, TypeInfo, MaxEncodedLen)]
     pub struct ProjectDetails<AccountId> {
-        name: Vec<u8>,
         owner: AccountId,
         destination: AccountId
     }
 
+    type AccountIdOf<T> = <T as frame_system::Config>::AccountId;
+    type ProjectDetailsOf<T> = ProjectDetails<AccountIdOf<T>>;
+
+    // ID generation storage items
+    // keeping track of the next id to distribute
     #[pallet::type_value]
     pub fn DefaultID<T: Config>() -> u32 { 1 }
-
     #[pallet::storage]
     pub type RoundID<T> = StorageValue<_, u32, ValueQuery, DefaultID<T>>;
-
     #[pallet::storage]
     pub type ProjectID<T> = StorageValue<_, u32, ValueQuery, DefaultID<T>>;
 
@@ -49,7 +51,7 @@ pub mod pallet {
     // only the users making a vote need to track the round_id
     // also prevents outside manipulation (i.e., non-coordinator ending voting, non-coordinator adding new project)
     #[pallet::storage]
-    pub type Coordinator<T> = StorageMap<_, Identity, <T as frame_system::Config>::AccountId, u32>;
+    pub type Coordinator<T> = StorageMap<_, Identity, AccountIdOf<T>, u32>;
 
     // (round_id) -> (is_active)
     // track if a specific round is active or not
@@ -58,16 +60,33 @@ pub mod pallet {
 
     // (project_id) -> (project details)
     #[pallet::storage]
-    pub type Project<T: Config> = StorageMap<_, Identity, u32, ProjectDetails<T::AccountId>, ValueQuery>;
+    pub type Project<T: Config> = StorageMap<_, Blake2_128Concat, u32, ProjectDetailsOf<T>, OptionQuery>;
 
     // (project_owner_account_id) -> (project_id)
     #[pallet::storage]
-    pub type ProjectOwner<T> = StorageMap<_, Identity, <T as frame_system::Config>::AccountId, u32>;
+    pub type ProjectOwner<T> = StorageMap<_, Identity, AccountIdOf<T>, u32>;
 
-    // votes storage type should have the key (round_id, project_id, account_id) and value (weight)
-    // this might be better as (round_id, project_id) -> (Vec<(account_id, weight)>)
+    // #[pallet::type_value]
+    // pub fun DefaultList<T: Config>() -> vec! { Vec::new() }
+
+    // (round_id) -> [(project_id)]
     // #[pallet::storage]
-    // pub type Vote<T>
+    // pub type Projects<T> = StorageMap<_, Identity, u32, vec!, ValueQuery, DefaultList<T>>;
+
+    // (round_id, project_id, account_id) -> (weight)
+    // benefit of doing this is when a user votes more than once on a single project, only their most recent vote will be counted
+    // and with an NMap we can iterate on a partial key (i.e., just the round and project IDs, so we can get each vote in batches by project_id)
+    #[pallet::storage]
+    pub type Vote<T> = StorageNMap<
+        _,
+        (
+            NMapKey<Blake2_128Concat, u32>,
+            NMapKey<Blake2_128Concat, u32>,
+            NMapKey<Blake2_128Concat, AccountIdOf<T>>
+        ),
+        u32,
+        ValueQuery
+    >;
 
 	// Pallets use events to inform users when important changes are made.
 	// https://docs.substrate.io/v3/runtime/events-and-errors
@@ -99,6 +118,8 @@ pub mod pallet {
 
         // COORDINATOR FUNCTION
         // The user who calls start_round will become the Coordinator
+        // lets go with this: the full ammount in the coordinator account will be the matching funds
+        // its easy enough to create a new wallet and move money into it, so this is a fine solution
         #[pallet::weight(100)]
         pub fn start_round(origin: OriginFor<T>) -> DispatchResult {
             let who = ensure_signed(origin)?;
@@ -118,21 +139,13 @@ pub mod pallet {
         }
 
         // PROJECT OWNER FUNCTION
-        // create_new_project(name: &str, address: T::AccountId) -> project_id: u32
-        // - make a new project by providing a name and an address. Returns a project ID
+        // the user who calls create_new_project will become the Project Owner
         #[pallet::weight(100)]
-        // pub fn create_new_project<'a>(origin: OriginFor<T>, name: &'a str, address: T::AccountId) -> DispatchResult {
-        pub fn create_new_project(origin: OriginFor<T>, name: Vec<u8>, address: T::AccountId) -> DispatchResult {
+        pub fn create_new_project(origin: OriginFor<T>, destination_account: T::AccountId) -> DispatchResult {
             let who = ensure_signed(origin)?;
-            // let name_string = String::from_utf8_lossy(&name);
-            // @Question: is address the account where funds will be distributed?
-            // or is address supposed to be the project owner?
-
-            // I like the idea of address being the funds destination
-            // with the user who calls create_new_project being the project owner
 
             let project_id = Self::get_new_project_id();
-            let project_details = ProjectDetails { name: name, owner: who, destination: address };
+            let project_details = ProjectDetails { owner: who, destination: destination_account };
             <Project<T>>::insert(project_id, project_details);
 
             Self::deposit_event(Event::NewProjectCreated(project_id));
@@ -141,8 +154,7 @@ pub mod pallet {
         }
         
         // PROJECT OWNER FUNCTION
-        // register_project(round_id: u32, project_id) -> NotProjectOwner | ProjectRegistered
-        // - associate a project with a voting round. Needs to be registered by the project owner.
+        // associate a project with a voting round. Needs to be registered by the project owner.
         #[pallet::weight(100)]
         pub fn register_project(origin: OriginFor<T>, round_id: u32, project_id: u32) -> DispatchResult {
             // check if project exists
@@ -169,16 +181,18 @@ pub mod pallet {
 
             // TODO
             // create a new record for this project with this round
+            // saving this for later because I don't really konw how to do it yet
             // something like <Projects<T>> which is a StorageMap of (round_id) -> (project_ids: Vec<u32>) 
+            // <Projects<T>>::try_push(round_id, project_id);
 
             Ok(())
         }
         
         // VOTER FUNCTION
-        // vote(round_id: u32, project_id, weight: u8) -> 
-        // @Question: is the weight supposed to be how much the user is committing? Shouldn't that be much larger than u8?
+        // records a vote
         #[pallet::weight(100)]
-        pub fn vote(origin: OriginFor<T>, round_id: u32, project_id: u32, weight: u8) -> DispatchResult {
+        pub fn vote(origin: OriginFor<T>, round_id: u32, project_id: u32, weight: u32) -> DispatchResult {
+            let who = ensure_signed(origin)?;
             // check if the round is active
             if !<Round<T>>::contains_key(round_id) { // round has never been registered
                 Err(Error::<T>::InvalidRoundID)?
@@ -186,18 +200,32 @@ pub mod pallet {
                 Err(Error::<T>::InvalidRoundID)?
             }
 
+            // TODO
+            // get list of projects for this round
+
+            // TODO
+            // make sure this project_id is in the list
+
             // apply vote
             // will need a new <Vote<T>> StorageMap
-
-            // store as (round_id, project_id, voter_id) -> weight
-            // benefit of doing this is when a user votes more than once on a single project, only their most recent vote will be counted
-            // and with an NMap we can iterate on a partial key (i.e., just the round and project IDs, so we can get each vote in batches by project_id)
+            //round_id, project_id, account_id) -> (weight)
+            let key = (round_id, project_id, who);
+            match <Vote<T>>::try_get(&key) {
+                Ok(_) => {
+                    <Vote<T>>::mutate(&key, |old_weight| {
+                        *old_weight = weight;
+                    });
+                },
+                Err(_) => {
+                    <Vote<T>>::insert(&key, weight);
+                }
+            }
 
             Ok(())
         }
 
         // COORDINATOR FUNCTION
-        // end_round (round_id: u32)
+        // invalidates round and coordinator records, distributes funds
         #[pallet::weight(100)]
         pub fn end_round(origin: OriginFor<T>) -> DispatchResult {
             let who = ensure_signed(origin)?;
@@ -254,6 +282,7 @@ pub mod pallet {
             }
         }
 
+        // distribute funds into project accounts
         fn perform_qf_and_distribute_funds(round_id: u32) {
 
         }
