@@ -21,14 +21,22 @@ pub mod pallet {
 
     // ProjectID used to uniquely identify a project
     pub type ProjectID = u32;
-
     pub type RoundID = u32;
+    pub type VoterID = u32;
+
     #[derive(Encode, Decode, Default, PartialEq, Eq, TypeInfo, MaxEncodedLen)]
     pub struct ProjectDetails<AccountId> {
         name: BoundedVec<u8, ConstU32<32>>,
         owner: AccountId,
         payment_destination: AccountId
     }
+
+    #[derive(Encode, Decode, Default, PartialEq, Eq, TypeInfo, MaxEncodedLen)]
+    pub struct VoteDetails<AccountId> {
+        account: AccountId,
+        weight: u32
+    }
+
 	/// Configure the pallet by specifying the parameters and types on which it depends.
 	#[pallet::config]
 	pub trait Config: frame_system::Config {
@@ -54,6 +62,10 @@ pub mod pallet {
     #[pallet::getter(fn next_project_id)]
     pub type NextProjectID<T: Config> = StorageValue<_, ProjectID, ValueQuery, DefaultID>;
 
+    #[pallet::storage]
+    #[pallet::getter(fn next_voter_id)]
+    pub type NextVoterID<T: Config> = StorageValue<_, VoterID, ValueQuery, DefaultID>;
+
     // (coordinator_account_id) -> (round_id)
     // doing it this way so the coordinator can call functions without tracking the round_id,
     // only the users making a vote need to track the round_id
@@ -78,6 +90,10 @@ pub mod pallet {
     #[pallet::storage]
     pub type Projects<T: Config> = StorageMap<_, Blake2_128Concat, u32, BoundedVec<u32, T::MaxProjects>, ValueQuery>;
 
+    // (account_id) -> (voter_id)
+    #[pallet::storage]
+    pub type Voter<T: Config> = StorageMap<_, Blake2_128Concat, <T as frame_system::Config>::AccountId, VoterID, ValueQuery>;
+
     // (round_id, project_id, account_id) -> (weight)
     // benefit of doing this is when a user votes more than once on a single project, only their most recent vote will be counted
     // and with an NMap we can iterate on a partial key (i.e., just the round and project IDs, so we can get each vote in batches by project_id)
@@ -87,10 +103,10 @@ pub mod pallet {
         (
             NMapKey<Blake2_128Concat, RoundID>,
             NMapKey<Blake2_128Concat, ProjectID>,
-            NMapKey<Blake2_128Concat, T::AccountId>
+            NMapKey<Blake2_128Concat, VoterID>
         ),
-        u32,
-        ValueQuery
+        VoteDetails<T::AccountId>,
+        OptionQuery
     >;
 
 	// Pallets use events to inform users when important changes are made.
@@ -108,7 +124,6 @@ pub mod pallet {
         InvalidRoundID,
         OverflowRoundID,
         InvalidProjectID,
-        
         ProjectAlreadyRegistered,
         ProjectNotRegistered,
         MaximumProjectsReached,
@@ -215,18 +230,14 @@ pub mod pallet {
                 Err(<Error<T>>::ProjectNotRegistered)?
             }
 
+            // get VoterID for this user
+            // user has a VoterID only so we can use it in the key for Vote
+            let voter_id = Self::get_voter_id_for_user(&who);
+
             // apply vote
-            let key = (round_id, project_id, who);
-            match <Vote<T>>::try_get(&key) {
-                Ok(_) => {
-                    <Vote<T>>::mutate(&key, |old_weight| {
-                        *old_weight = weight;
-                    });
-                },
-                Err(_) => {
-                    <Vote<T>>::insert(&key, weight);
-                }
-            }
+            let key = (round_id, project_id, voter_id);
+            let details = VoteDetails { account: who, weight: weight };
+            <Vote<T>>::insert(key, details);
 
             Ok(())
         }
@@ -303,6 +314,25 @@ pub mod pallet {
             return false;
         }
 
+        fn get_voter_id_for_user(account_id: &<T as frame_system::Config>::AccountId) -> VoterID {
+            match <Voter<T>>::try_get(account_id) {
+                Ok(voter_id) => { return voter_id; },
+                Err(_) => {
+                    let voter_id = Self::next_voter_id();
+                    let next_voter_id: VoterID = voter_id.wrapping_add(1);
+                    <Voter<T>>::insert(account_id, next_voter_id);
+                    return next_voter_id;
+                }
+            }
+        }
+ 
+        fn get_destination_account_for_project(project_id: u32) -> Option<T::AccountId> {
+            match <Project<T>>::try_get(project_id) {
+                Ok(details) => { Some(details.payment_destination) },
+                Err(_) => { None }
+            }
+        }
+
         // distribute funds into project accounts
         fn perform_qf_and_distribute_funds(round_id: RoundID) {
             // get list of projects for this round_id
@@ -315,14 +345,15 @@ pub mod pallet {
             }
             // loop through each project
             for project_id in projects {
+                // get account to distribute funds into
+                let dest_acc = Self::get_destination_account_for_project(project_id);
+                if dest_acc.is_none() { continue; }
+                let destination = dest_acc.unwrap();
                 // loop through each vote for this project
                 let prefix_key = (round_id, project_id);
                 for vote in <Vote<T>>::iter_prefix_values(prefix_key) {
-                    // I think I'm changing my mind on this
-                    // I'd rather have votes stored as (round, project) -> [(account_id, vote)]
-                    // only because I don't know how to get the full key for a vote like this
-                    // if we can get the full key using iter_prefix_values then its fine to continue this way
-                    
+                    // vote.account is the account_id for this voter
+                    // vote.weight is the ammount the user has put up for this project
                 }
             }
         }
