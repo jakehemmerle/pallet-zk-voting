@@ -404,5 +404,15 @@ pub mod pallet {
                 // distribute_funds(destination, matching_funds_account, project_matched_funds);
             }
         }
+
+        // Not sure what the return type should be
+        fn get_wallet_ammount(account: T::AccountId) -> u32 {
+            // TODO
+            0
+        }
+
+        fn distribute_funds(destination_account: T::AccountId, source_account: T::AccountId, amount: u32) {
+            // TODO
+        }
     }
 }
