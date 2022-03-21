@@ -379,6 +379,8 @@ pub mod pallet {
             for project_id in &projects {
                 total_voting_power += Self::get_voting_power_for_project(*project_id, round_id);
             }
+            // need something like this to determine how much funds we have to match with
+            let matching_funds = Self::get_wallet_ammount(matching_funds_account);
             // Second loop: distribute funds
             for project_id in &projects {
                 // get account to distribute funds into
@@ -390,28 +392,27 @@ pub mod pallet {
                 let prefix_key = (round_id, project_id);
                 for vote in <Vote<T>>::iter_prefix_values(prefix_key) {
                     // !!! TODO: MAKE distribute_funds
-                    // distribute_funds(destination, vote.account, vote.weight);
+                    Self::distribute_funds(&destination, &vote.account, vote.weight);
                 }
                 // distribute matching funds
                 let voting_power = Self::get_voting_power_for_project(*project_id, round_id);
                 let distribution_ratio = voting_power/total_voting_power;
                 // !!! TODO: MAKE get_wallet_ammount
                 // ammount to be distributed is distribution_ratio * matching_funds
-                // need something like this to determine how much funds we have to match with
-                // let matching_funds = get_wallet_ammount(matching_funds_account);
+                
                 // might want to make this .floor() ?? not sure if we need it or not
-                // let project_matched_funds = matching_funds*distribution_ratio;
-                // distribute_funds(destination, matching_funds_account, project_matched_funds);
+                let project_matched_funds = matching_funds*distribution_ratio;
+                Self::distribute_funds(&destination, matching_funds_account, project_matched_funds);
             }
         }
 
         // Not sure what the return type should be
-        fn get_wallet_ammount(account: T::AccountId) -> u32 {
+        fn get_wallet_ammount(account: &T::AccountId) -> u32 {
             // TODO
             0
         }
 
-        fn distribute_funds(destination_account: T::AccountId, source_account: T::AccountId, amount: u32) {
+        fn distribute_funds(destination_account: &T::AccountId, source_account: &T::AccountId, amount: u32) {
             // TODO
         }
     }
