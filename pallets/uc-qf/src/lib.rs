@@ -19,6 +19,8 @@ pub mod pallet {
     use frame_support::BoundedVec;
     use frame_support::inherent::Vec;
     use frame_support::traits::ConstU32;
+    #[allow(unused_imports)]
+    use micromath::F32Ext;
 
     // ProjectID used to uniquely identify a project
     pub type ProjectID = u32;
@@ -30,7 +32,7 @@ pub mod pallet {
         name: BoundedVec<u8, ConstU32<32>>,
         owner: AccountId,
         payment_destination: AccountId,
-        voting_power: u64
+        voting_power: u32
     }
 
     #[derive(Encode, Decode, Default, PartialEq, Eq, TypeInfo, MaxEncodedLen)]
@@ -168,7 +170,7 @@ pub mod pallet {
             let who = ensure_signed(origin)?;
 
             let project_id = Self::get_new_project_id();
-            let project_details = ProjectDetails { owner: who, name, payment_destination, voting_power: 0_u64 };
+            let project_details = ProjectDetails { owner: who, name, payment_destination, voting_power: 0_u32 };
             <Project<T>>::insert(project_id, project_details);
 
             Self::deposit_event(Event::NewProjectCreated(project_id));
@@ -266,7 +268,7 @@ pub mod pallet {
             <Round<T>>::remove(round_id);
 
             // collect all stored votes, perform QF
-            Self::perform_qf_and_distribute_funds(round_id);
+            Self::perform_qf_and_distribute_funds(round_id, &who);
 
             Ok(())
         }
@@ -337,18 +339,18 @@ pub mod pallet {
             }
         }
 
-        fn get_voting_power_for_project(project_id: u32, round_id: u32) -> u64 {
+        fn get_voting_power_for_project(project_id: u32, round_id: u32) -> u32 {
             match <Project<T>>::try_get(project_id)  {
                 Ok(mut details) => {
-                    if details.voting_power == 0_u64 {
+                    if details.voting_power == 0_u32 {
                         // voting power is SQUARE(SUM(SQRT(weight_i)))
                         let prefix_key = (round_id, project_id);
-                        let mut voting_power = 0_u64;
+                        let mut voting_power = 0_u32;
                         for vote in <Vote<T>>::iter_prefix_values(prefix_key) {
-                            voting_power += (vote.weight as f64).sqrt() as u64;
+                            voting_power += (vote.weight as f32).sqrt() as u32;
                             // voting_power += f64::sqrt(vote.weight.into()) as u64;
                         }
-                        voting_power = u64::pow(voting_power, 2);
+                        voting_power = u32::pow(voting_power, 2);
                         // update voting_power on the project record
                         details.voting_power = voting_power;
                         <Project<T>>::insert(project_id, details);
@@ -357,12 +359,12 @@ pub mod pallet {
                         details.voting_power
                     }
                 },
-                Err(_) => { 0_u64 }
+                Err(_) => { 0_u32 }
             }
         }
 
         // distribute funds into project accounts
-        fn perform_qf_and_distribute_funds(round_id: RoundID) {
+        fn perform_qf_and_distribute_funds(round_id: RoundID, matching_funds_account: &T::AccountId) {
             // get list of projects for this round_id
             let projects: Vec<u32>;
             match <Projects<T>>::try_get(round_id) {
@@ -373,7 +375,7 @@ pub mod pallet {
                 Err(_) => { return; }
             }
             // First loop: calculate voting power for each project
-            let mut total_voting_power = 0_u64;
+            let mut total_voting_power = 0_u32;
             for project_id in &projects {
                 total_voting_power += Self::get_voting_power_for_project(*project_id, round_id);
             }
@@ -387,13 +389,19 @@ pub mod pallet {
                 // loop through each vote for this project
                 let prefix_key = (round_id, project_id);
                 for vote in <Vote<T>>::iter_prefix_values(prefix_key) {
-                    // vote.account is the account_id for this voter
-                    // vote.weight is the ammount the user has put up for this project
+                    // !!! TODO: MAKE distribute_funds
+                    // distribute_funds(destination, vote.account, vote.weight);
                 }
                 // distribute matching funds
                 let voting_power = Self::get_voting_power_for_project(*project_id, round_id);
                 let distribution_ratio = voting_power/total_voting_power;
+                // !!! TODO: MAKE get_wallet_ammount
                 // ammount to be distributed is distribution_ratio * matching_funds
+                // need something like this to determine how much funds we have to match with
+                // let matching_funds = get_wallet_ammount(matching_funds_account);
+                // might want to make this .floor() ?? not sure if we need it or not
+                // let project_matched_funds = matching_funds*distribution_ratio;
+                // distribute_funds(destination, matching_funds_account, project_matched_funds);
             }
         }
     }
