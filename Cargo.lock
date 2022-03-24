@@ -4013,6 +4013,7 @@ dependencies = [
  "frame-support",
  "frame-system",
  "micromath",
+ "pallet-balances",
  "parity-scale-codec",
  "scale-info",
  "sp-core",

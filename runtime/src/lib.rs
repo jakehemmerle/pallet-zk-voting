@@ -281,6 +281,7 @@ parameter_types! {
 impl pallet_uc_qf::Config for Runtime {
     type Event = Event;
     type MaxProjects = MaxProjects;
+    type Currency = Balances;
 }
 
 // Create the runtime by composing the FRAME pallets that were previously configured.

@@ -14,11 +14,13 @@ pub use frame_support::sp_runtime::{traits::{AccountIdConversion, Saturating, Ze
 
 #[frame_support::pallet]
 pub mod pallet {
-	use frame_support::pallet_prelude::*;
 	use frame_system::pallet_prelude::*;
-    use frame_support::BoundedVec;
-    use frame_support::inherent::Vec;
-    use frame_support::traits::ConstU32;
+    use frame_support::{
+        pallet_prelude::*,
+        BoundedVec,
+        inherent::Vec,
+        traits::{ConstU32, Currency, ExistenceRequirement}
+    };
     #[allow(unused_imports)]
     use micromath::F32Ext;
 
@@ -46,7 +48,7 @@ pub mod pallet {
 	pub trait Config: frame_system::Config {
 		/// Because this pallet emits events, it depends on the runtime's definition of an event.
 		type Event: From<Event<Self>> + IsType<<Self as frame_system::Config>::Event>;
-
+        type Currency: Currency<Self::AccountId>;
         #[pallet::constant]
         type MaxProjects: Get<u32>;
 	}
@@ -54,6 +56,8 @@ pub mod pallet {
 	#[pallet::pallet]
 	#[pallet::generate_store(pub(super) trait Store)]
 	pub struct Pallet<T>(_);
+
+    pub type BalanceOf<T> = <<T as Config>::Currency as Currency<<T as frame_system::Config>::AccountId>>::Balance;
 
     #[pallet::type_value]
     pub fn DefaultID() -> u32 { 1 }
@@ -121,6 +125,8 @@ pub mod pallet {
         NewVotingRound(RoundID),
         NewProjectCreated(ProjectID),
         ProjectRegistered(RoundID, ProjectID),
+        Log(u32),
+        LogBalance(BalanceOf<T>)
 	}
 
 	#[pallet::error]
@@ -371,7 +377,7 @@ pub mod pallet {
                 Ok(projects_vec) => {
                     projects = projects_vec.into_inner();
                 },
-                // todo: throw an error instead of returning
+                // !!! TODO: throw an error instead of returning
                 Err(_) => { return; }
             }
             // First loop: calculate voting power for each project
@@ -379,8 +385,11 @@ pub mod pallet {
             for project_id in &projects {
                 total_voting_power += Self::get_voting_power_for_project(*project_id, round_id);
             }
+            Self::deposit_event(Event::Log(total_voting_power));
             // need something like this to determine how much funds we have to match with
-            let matching_funds = Self::get_wallet_ammount(matching_funds_account);
+            let matching_funds = Self::get_wallet_ammount(matching_funds_account).unwrap_or(0);
+            // !!! TODO: throw error
+            if matching_funds == 0 { return; }
             // Second loop: distribute funds
             for project_id in &projects {
                 // get account to distribute funds into
@@ -396,24 +405,32 @@ pub mod pallet {
                 }
                 // distribute matching funds
                 let voting_power = Self::get_voting_power_for_project(*project_id, round_id);
+                Self::deposit_event(Event::Log(voting_power));
+
                 let distribution_ratio = voting_power/total_voting_power;
-                // !!! TODO: MAKE get_wallet_ammount
+                Self::deposit_event(Event::Log(distribution_ratio));
+
                 // ammount to be distributed is distribution_ratio * matching_funds
-                
                 // might want to make this .floor() ?? not sure if we need it or not
                 let project_matched_funds = matching_funds*distribution_ratio;
+                Self::deposit_event(Event::Log(project_matched_funds));
                 Self::distribute_funds(&destination, matching_funds_account, project_matched_funds);
             }
         }
 
-        // Not sure what the return type should be
-        fn get_wallet_ammount(account: &T::AccountId) -> u32 {
-            // TODO
-            0
+        fn get_wallet_ammount(account: &T::AccountId) -> Option<u32> {
+            let balance = T::Currency::free_balance(account);
+            Self::deposit_event(Event::LogBalance(balance));
+            balance.try_into().ok()
         }
 
         fn distribute_funds(destination_account: &T::AccountId, source_account: &T::AccountId, amount: u32) {
-            // TODO
+            let balance: BalanceOf<T> = amount.into();
+            Self::deposit_event(Event::LogBalance(balance));
+            match T::Currency::transfer(source_account, destination_account, balance, ExistenceRequirement::KeepAlive) {
+                Ok(_) => {},
+                Err(_) => {}
+            }
         }
     }
 }
