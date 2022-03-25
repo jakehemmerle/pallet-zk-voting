@@ -3,15 +3,6 @@
 pub use pallet::*;
 pub use frame_support::sp_runtime::{traits::{AccountIdConversion, Saturating, Zero, Hash}};
 
-// #[cfg(test)]
-// mod mock;
-
-// #[cfg(test)]
-// mod tests;
-
-// #[cfg(feature = "runtime-benchmarks")]
-// mod benchmarking;
-
 #[frame_support::pallet]
 pub mod pallet {
 	use frame_system::pallet_prelude::*;
@@ -23,24 +14,27 @@ pub mod pallet {
     };
     #[allow(unused_imports)]
     use micromath::F32Ext;
+    use integer_sqrt::IntegerSquareRoot;
 
     // ProjectID used to uniquely identify a project
     pub type ProjectID = u32;
     pub type RoundID = u32;
     pub type VoterID = u32;
 
+    pub const CONVERSION_RATE: u64 = 100000000; // actual ratio is 1:1000000000000;
+
     #[derive(Encode, Decode, Default, PartialEq, Eq, TypeInfo, MaxEncodedLen)]
     pub struct ProjectDetails<AccountId> {
         name: BoundedVec<u8, ConstU32<32>>,
         owner: AccountId,
         payment_destination: AccountId,
-        voting_power: u32
+        voting_power: u128
     }
 
     #[derive(Encode, Decode, Default, PartialEq, Eq, TypeInfo, MaxEncodedLen)]
-    pub struct VoteDetails<AccountId> {
+    pub struct VoteDetails<AccountId, Balance> {
         account: AccountId,
-        weight: u32
+        balance: Balance
     }
 
 	/// Configure the pallet by specifying the parameters and types on which it depends.
@@ -113,7 +107,7 @@ pub mod pallet {
             NMapKey<Blake2_128Concat, ProjectID>,
             NMapKey<Blake2_128Concat, VoterID>
         ),
-        VoteDetails<T::AccountId>,
+        VoteDetails<T::AccountId, BalanceOf<T>>,
         OptionQuery
     >;
 
@@ -125,8 +119,8 @@ pub mod pallet {
         NewVotingRound(RoundID),
         NewProjectCreated(ProjectID),
         ProjectRegistered(RoundID, ProjectID),
-        Log(u32),
-        LogBalance(BalanceOf<T>)
+        LogErrNoProjectsForRound(),
+        LogConversionFailed(),
 	}
 
 	#[pallet::error]
@@ -176,7 +170,7 @@ pub mod pallet {
             let who = ensure_signed(origin)?;
 
             let project_id = Self::get_new_project_id();
-            let project_details = ProjectDetails { owner: who, name, payment_destination, voting_power: 0_u32 };
+            let project_details = ProjectDetails { owner: who, name, payment_destination, voting_power: 0_u128 };
             <Project<T>>::insert(project_id, project_details);
 
             Self::deposit_event(Event::NewProjectCreated(project_id));
@@ -226,7 +220,7 @@ pub mod pallet {
         // VOTER FUNCTION
         // records a vote
         #[pallet::weight(100)]
-        pub fn vote(origin: OriginFor<T>, round_id: u32, project_id: u32, weight: u32) -> DispatchResult {
+        pub fn vote(origin: OriginFor<T>, round_id: u32, project_id: u32, balance: BalanceOf<T>) -> DispatchResult {
             let who = ensure_signed(origin)?;
             // check if the round is active
             if !<Round<T>>::contains_key(round_id) { // round has never been registered
@@ -246,7 +240,7 @@ pub mod pallet {
 
             // apply vote
             let key = (round_id, project_id, voter_id);
-            let details = VoteDetails { account: who, weight: weight };
+            let details = VoteDetails { account: who, balance };
             <Vote<T>>::insert(key, details);
 
             Ok(())
@@ -345,18 +339,17 @@ pub mod pallet {
             }
         }
 
-        fn get_voting_power_for_project(project_id: u32, round_id: u32) -> u32 {
+        // voting power is SQUARE(SUM(SQRT(weight_i)))
+        fn get_voting_power_for_project(project_id: u32, round_id: u32) -> u128 {
             match <Project<T>>::try_get(project_id)  {
                 Ok(mut details) => {
-                    if details.voting_power == 0_u32 {
-                        // voting power is SQUARE(SUM(SQRT(weight_i)))
-                        let prefix_key = (round_id, project_id);
-                        let mut voting_power = 0_u32;
-                        for vote in <Vote<T>>::iter_prefix_values(prefix_key) {
-                            voting_power += (vote.weight as f32).sqrt() as u32;
-                            // voting_power += f64::sqrt(vote.weight.into()) as u64;
+                    if details.voting_power == 0_u128 {
+                        let mut voting_power = 0_u128;
+                        for vote in <Vote<T>>::iter_prefix_values((round_id, project_id)) {
+                            let balance128 = Self::balance_as_128(vote.balance);
+                            voting_power += balance128.integer_sqrt();
                         }
-                        voting_power = u32::pow(voting_power, 2);
+                        voting_power = u128::pow(voting_power, 2);
                         // update voting_power on the project record
                         details.voting_power = voting_power;
                         <Project<T>>::insert(project_id, details);
@@ -365,7 +358,7 @@ pub mod pallet {
                         details.voting_power
                     }
                 },
-                Err(_) => { 0_u32 }
+                Err(_) => { 0_u128 }
             }
         }
 
@@ -374,63 +367,75 @@ pub mod pallet {
             // get list of projects for this round_id
             let projects: Vec<u32>;
             match <Projects<T>>::try_get(round_id) {
-                Ok(projects_vec) => {
-                    projects = projects_vec.into_inner();
-                },
-                // !!! TODO: throw an error instead of returning
-                Err(_) => { return; }
+                Ok(projects_vec) => { projects = projects_vec.into_inner() },
+                Err(_) => {
+                    Self::deposit_event(Event::LogErrNoProjectsForRound());
+                    return;
+                }
             }
+            // Get the amount of funds we have available
+            let matching_balance = Self::get_wallet_balance(matching_funds_account);
+            let matching_funds = Self::balance_as_128(matching_balance);
             // First loop: calculate voting power for each project
-            let mut total_voting_power = 0_u32;
+            let mut total_voting_power = 0_u128;
             for project_id in &projects {
                 total_voting_power += Self::get_voting_power_for_project(*project_id, round_id);
             }
-            Self::deposit_event(Event::Log(total_voting_power));
-            // need something like this to determine how much funds we have to match with
-            let matching_funds = Self::get_wallet_ammount(matching_funds_account).unwrap_or(0);
-            // !!! TODO: throw error
-            if matching_funds == 0 { return; }
             // Second loop: distribute funds
             for project_id in &projects {
                 // get account to distribute funds into
-                let dest_acc = Self::get_destination_account_for_project(*project_id);
-                if dest_acc.is_none() { continue; }
-                let destination = dest_acc.unwrap();
+                let destination: T::AccountId;
+                match Self::get_destination_account_for_project(*project_id) {
+                    Some(account) => { destination = account },
+                    None => { continue; }
+                }
                 // distribute funds each voter has promised
-                // loop through each vote for this project
-                let prefix_key = (round_id, project_id);
-                for vote in <Vote<T>>::iter_prefix_values(prefix_key) {
-                    // !!! TODO: MAKE distribute_funds
-                    Self::distribute_funds(&destination, &vote.account, vote.weight);
+                for vote in <Vote<T>>::iter_prefix_values((round_id, project_id)) {
+                    Self::distribute_funds(&destination, &vote.account, vote.balance);
                 }
                 // distribute matching funds
+                if total_voting_power == 0 { return; }
                 let voting_power = Self::get_voting_power_for_project(*project_id, round_id);
-                Self::deposit_event(Event::Log(voting_power));
-
-                let distribution_ratio = voting_power/total_voting_power;
-                Self::deposit_event(Event::Log(distribution_ratio));
+                let distribution_ratio = (voting_power as f64)/(total_voting_power as f64);
 
                 // ammount to be distributed is distribution_ratio * matching_funds
-                // might want to make this .floor() ?? not sure if we need it or not
-                let project_matched_funds = matching_funds*distribution_ratio;
-                Self::deposit_event(Event::Log(project_matched_funds));
-                Self::distribute_funds(&destination, matching_funds_account, project_matched_funds);
+                let mut project_matched_funds = ((matching_funds as f64)*distribution_ratio) as u128;
+                // estimated gas
+                // !!!! TODO actually calculate what gas would be so this can distribute 100% of an account
+                project_matched_funds -= 150000000;
+                match Self::u128_to_balance(project_matched_funds) {
+                    Some(balance) => {
+                        Self::distribute_funds(&destination, matching_funds_account, balance);
+                    },
+                    None => {
+                        Self::deposit_event(Event::LogConversionFailed());
+                    }
+                }
             }
         }
 
-        fn get_wallet_ammount(account: &T::AccountId) -> Option<u32> {
-            let balance = T::Currency::free_balance(account);
-            Self::deposit_event(Event::LogBalance(balance));
-            balance.try_into().ok()
+        fn balance_as_128(balance: BalanceOf<T>) -> u128 {
+            let b128_option: Option<u128> = balance.try_into().ok();
+            match b128_option {
+                Some(b128) => { b128 },
+                None => { 0 }
+            }
         }
 
-        fn distribute_funds(destination_account: &T::AccountId, source_account: &T::AccountId, amount: u32) {
-            let balance: BalanceOf<T> = amount.into();
-            Self::deposit_event(Event::LogBalance(balance));
+        fn u128_to_balance(value: u128) -> Option<BalanceOf<T>> {
+            value.try_into().ok()
+        }
+
+        fn get_wallet_balance(account: &T::AccountId) -> BalanceOf<T> {
+            T::Currency::free_balance(account)
+        }
+
+        fn distribute_funds(destination_account: &T::AccountId, source_account: &T::AccountId, balance: BalanceOf<T>) {
             match T::Currency::transfer(source_account, destination_account, balance, ExistenceRequirement::KeepAlive) {
                 Ok(_) => {},
                 Err(_) => {}
             }
         }
+        
     }
 }
