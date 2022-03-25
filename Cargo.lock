@@ -3322,12 +3322,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "micromath"
-version = "2.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "39617bc909d64b068dcffd0e3e31679195b5576d0c83fadc52690268cc2b2b55"
-
-[[package]]
 name = "minimal-lexical"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4013,7 +4007,6 @@ dependencies = [
  "frame-support",
  "frame-system",
  "integer-sqrt",
- "micromath",
  "pallet-balances",
  "parity-scale-codec",
  "scale-info",

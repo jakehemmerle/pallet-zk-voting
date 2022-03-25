@@ -13,7 +13,6 @@ pub mod pallet {
         traits::{ConstU32, Currency, ExistenceRequirement}
     };
     #[allow(unused_imports)]
-    use micromath::F32Ext;
     use integer_sqrt::IntegerSquareRoot;
 
     // ProjectID used to uniquely identify a project
@@ -436,6 +435,6 @@ pub mod pallet {
                 Err(_) => {}
             }
         }
-        
+
     }
 }
