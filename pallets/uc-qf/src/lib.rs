@@ -18,9 +18,6 @@ pub mod pallet {
     // ProjectID used to uniquely identify a project
     pub type ProjectID = u32;
     pub type RoundID = u32;
-    pub type VoterID = u32;
-
-    pub const CONVERSION_RATE: u64 = 100000000; // actual ratio is 1:1000000000000;
 
     #[derive(Encode, Decode, Default, PartialEq, Eq, TypeInfo, MaxEncodedLen)]
     pub struct ProjectDetails<AccountId> {
@@ -44,6 +41,8 @@ pub mod pallet {
         type Currency: Currency<Self::AccountId>;
         #[pallet::constant]
         type MaxProjects: Get<u32>;
+        #[pallet::constant]
+        type MaxVotes: Get<u32>;
 	}
 
 	#[pallet::pallet]
@@ -62,10 +61,6 @@ pub mod pallet {
     #[pallet::storage]
     #[pallet::getter(fn next_project_id)]
     pub type NextProjectID<T: Config> = StorageValue<_, ProjectID, ValueQuery, DefaultID>;
-
-    #[pallet::storage]
-    #[pallet::getter(fn next_voter_id)]
-    pub type NextVoterID<T: Config> = StorageValue<_, VoterID, ValueQuery, DefaultID>;
 
     // (coordinator_account_id) -> (round_id)
     // doing it this way so the coordinator can call functions without tracking the round_id,
@@ -91,10 +86,6 @@ pub mod pallet {
     #[pallet::storage]
     pub type Projects<T: Config> = StorageMap<_, Blake2_128Concat, u32, BoundedVec<u32, T::MaxProjects>, ValueQuery>;
 
-    // (account_id) -> (voter_id)
-    #[pallet::storage]
-    pub type Voter<T: Config> = StorageMap<_, Blake2_128Concat, <T as frame_system::Config>::AccountId, VoterID, ValueQuery>;
-
     // (round_id, project_id, account_id) -> (weight)
     // benefit of doing this is when a user votes more than once on a single project, only their most recent vote will be counted
     // and with an NMap we can iterate on a partial key (i.e., just the round and project IDs, so we can get each vote in batches by project_id)
@@ -103,11 +94,10 @@ pub mod pallet {
         _,
         (
             NMapKey<Blake2_128Concat, RoundID>,
-            NMapKey<Blake2_128Concat, ProjectID>,
-            NMapKey<Blake2_128Concat, VoterID>
+            NMapKey<Blake2_128Concat, ProjectID>
         ),
-        VoteDetails<T::AccountId, BalanceOf<T>>,
-        OptionQuery
+        BoundedVec<VoteDetails<T::AccountId, BalanceOf<T>>, T::MaxVotes>,
+        ValueQuery
     >;
 
 	// Pallets use events to inform users when important changes are made.
@@ -119,7 +109,7 @@ pub mod pallet {
         NewProjectCreated(ProjectID),
         ProjectRegistered(RoundID, ProjectID),
         LogErrNoProjectsForRound(),
-        LogConversionFailed(),
+        LogConversionFailed()
 	}
 
 	#[pallet::error]
@@ -130,6 +120,7 @@ pub mod pallet {
         ProjectAlreadyRegistered,
         ProjectNotRegistered,
         MaximumProjectsReached,
+        MaximumVotesReached,
         NotCoordinator,
         CoordinatorAlreadyActive,
         RoundIsInactive,
@@ -233,14 +224,11 @@ pub mod pallet {
                 Err(<Error<T>>::ProjectNotRegistered)?
             }
 
-            // get VoterID for this user
-            // user has a VoterID only so we can use it in the key for Vote
-            let voter_id = Self::get_voter_id_for_user(&who);
-
             // apply vote
-            let key = (round_id, project_id, voter_id);
             let details = VoteDetails { account: who, balance };
-            <Vote<T>>::insert(key, details);
+            <Vote<T>>::try_mutate(Self::generate_vote_key(round_id, project_id), |votes_vec| {
+                votes_vec.try_push(details)
+            }).map_err(|_| <Error<T>>::MaximumVotesReached)?;
 
             Ok(())
         }
@@ -290,6 +278,10 @@ pub mod pallet {
             project_id
         }
 
+        fn generate_vote_key(round_id: RoundID, project_id: ProjectID) -> (RoundID, ProjectID) {
+            (round_id, project_id)
+        }
+
         // Check if a given coordinator is associated with an active round
         fn is_coordinator_active(coordinator: &<T as frame_system::Config>::AccountId) -> bool {
             // Try and find the Coordinator ID in storage
@@ -318,18 +310,6 @@ pub mod pallet {
             }
             return false;
         }
-
-        fn get_voter_id_for_user(account_id: &<T as frame_system::Config>::AccountId) -> VoterID {
-            match <Voter<T>>::try_get(account_id) {
-                Ok(voter_id) => { return voter_id; },
-                Err(_) => {
-                    let voter_id = Self::next_voter_id();
-                    let next_voter_id: VoterID = voter_id.wrapping_add(1);
-                    <Voter<T>>::insert(account_id, next_voter_id);
-                    return next_voter_id;
-                }
-            }
-        }
  
         fn get_destination_account_for_project(project_id: u32) -> Option<T::AccountId> {
             match <Project<T>>::try_get(project_id) {
@@ -338,13 +318,22 @@ pub mod pallet {
             }
         }
 
+        fn get_votes_for_project(project_id: ProjectID, round_id: RoundID) -> Vec<VoteDetails<T::AccountId, BalanceOf<T>>> {
+            let mut votes: Vec<VoteDetails<T::AccountId, BalanceOf<T>>> = Vec::new();
+            match <Vote<T>>::try_get(Self::generate_vote_key(round_id, project_id)) {
+                Ok(votes_vec) => { votes = votes_vec.into_inner() },
+                Err(_) => {}
+            }
+            votes
+        }
+
         // voting power is SQUARE(SUM(SQRT(weight_i)))
         fn get_voting_power_for_project(project_id: u32, round_id: u32) -> u128 {
             match <Project<T>>::try_get(project_id)  {
                 Ok(mut details) => {
                     if details.voting_power == 0_u128 {
                         let mut voting_power = 0_u128;
-                        for vote in <Vote<T>>::iter_prefix_values((round_id, project_id)) {
+                        for vote in Self::get_votes_for_project(project_id, round_id) {
                             let balance128 = Self::balance_as_128(vote.balance);
                             voting_power += balance128.integer_sqrt();
                         }
@@ -389,7 +378,7 @@ pub mod pallet {
                     None => { continue; }
                 }
                 // distribute funds each voter has promised
-                for vote in <Vote<T>>::iter_prefix_values((round_id, project_id)) {
+                for vote in Self::get_votes_for_project(*project_id, round_id) {
                     Self::distribute_funds(&destination, &vote.account, vote.balance);
                 }
                 // distribute matching funds
@@ -399,9 +388,8 @@ pub mod pallet {
 
                 // ammount to be distributed is distribution_ratio * matching_funds
                 let mut project_matched_funds = ((matching_funds as f64)*distribution_ratio) as u128;
-                // estimated gas
-                // !!!! TODO actually calculate what gas would be so this can distribute 100% of an account
-                project_matched_funds -= 150000000;
+                // subtract 100k so gas can be paid
+                project_matched_funds -= 100000;
                 match Self::u128_to_balance(project_matched_funds) {
                     Some(balance) => {
                         Self::distribute_funds(&destination, matching_funds_account, balance);
@@ -430,10 +418,7 @@ pub mod pallet {
         }
 
         fn distribute_funds(destination_account: &T::AccountId, source_account: &T::AccountId, balance: BalanceOf<T>) {
-            match T::Currency::transfer(source_account, destination_account, balance, ExistenceRequirement::KeepAlive) {
-                Ok(_) => {},
-                Err(_) => {}
-            }
+            let _ = T::Currency::transfer(source_account, destination_account, balance, ExistenceRequirement::KeepAlive);
         }
 
     }

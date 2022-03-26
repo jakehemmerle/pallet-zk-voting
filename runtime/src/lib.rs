@@ -276,11 +276,13 @@ impl pallet_template::Config for Runtime {
 
 parameter_types! {
 	pub const MaxProjects: u32 = 2;
+    pub const MaxVotes: u32 = 100000;
 }
 
 impl pallet_uc_qf::Config for Runtime {
     type Event = Event;
     type MaxProjects = MaxProjects;
+    type MaxVotes = MaxVotes;
     type Currency = Balances;
 }
 
