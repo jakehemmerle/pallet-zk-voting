@@ -86,9 +86,8 @@ pub mod pallet {
     #[pallet::storage]
     pub type Projects<T: Config> = StorageMap<_, Blake2_128Concat, u32, BoundedVec<u32, T::MaxProjects>, ValueQuery>;
 
-    // (round_id, project_id, account_id) -> (weight)
-    // benefit of doing this is when a user votes more than once on a single project, only their most recent vote will be counted
-    // and with an NMap we can iterate on a partial key (i.e., just the round and project IDs, so we can get each vote in batches by project_id)
+    // (round_id, project_id) -> [VoteDetails]
+    // does not protect against a user submitting multiple votes for the same project
     #[pallet::storage]
     pub type Vote<T: Config> = StorageNMap<
         _,
